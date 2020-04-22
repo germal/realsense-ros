@@ -7,6 +7,7 @@ T265RealsenseNode::T265RealsenseNode(ros::NodeHandle& nodeHandle,
                                      rs2::device dev,
                                      const std::string& serial_no) : 
                                      BaseRealSenseNode(nodeHandle, privateNodeHandle, dev, serial_no),
+                                     _pose_snr(dev.first<rs2::pose_sensor>()),
                                      _wo_snr(dev.first<rs2::wheel_odometer>()),
                                      _use_odom_in(false) 
                                      {
@@ -14,6 +15,108 @@ T265RealsenseNode::T265RealsenseNode(ros::NodeHandle& nodeHandle,
                                          initializeOdometryInput();
                                      }
 
+void T265RealsenseNode::importLocalization()
+{
+    std::string localization_file;
+    _pnh.param("localization_file", localization_file, std::string(""));
+    if (localization_file.empty())
+    {
+        ROS_INFO("No localization_file. No localization data loaded.");
+        return;
+    }
+    
+    importLocalization(localization_file);
+}
+
+// Copied from https://github.com/IntelRealSense/librealsense/blob/master/examples/ar-advanced/rs-ar-advanced.cpp
+std::vector<uint8_t> bytes_from_raw_file(const std::string& filename)
+{
+  std::ifstream file(filename.c_str(), std::ios::binary);
+  if (!file.good())
+    throw std::runtime_error("Invalid binary file specified. Verify the source path and location permissions");
+  
+  // Determine the file length
+  file.seekg(0, std::ios_base::end);
+  std::size_t size = file.tellg();
+  if (!size)
+    throw std::runtime_error("Invalid binary file -zero-size");
+  file.seekg(0, std::ios_base::beg);
+  
+  // Create a vector to store the data
+  std::vector<uint8_t> v(size);
+  
+  // Load the data
+  file.read((char*)&v[0], size);
+  
+  return v;
+}
+
+void raw_file_from_bytes(const std::string& filename, const std::vector<uint8_t> bytes)
+{
+  std::ofstream file(filename, std::ios::binary | std::ios::trunc);
+  if (!file.good())
+    throw std::runtime_error("Invalid binary file specified. Verify the target path and location permissions");
+  file.write((char*)bytes.data(), bytes.size());
+}
+
+void T265RealsenseNode::importLocalization(const std::string& localization_file)
+{
+    try {
+      _pose_snr.import_localization_map(bytes_from_raw_file(localization_file));
+      ROS_INFO_STREAM("Map loaded from " << localization_file);
+    }
+    catch (std::runtime_error e)
+    {
+      ROS_ERROR_STREAM("Error loading map from " << localization_file << ": " << e.what());; 
+    }
+    
+    /**
+     * Load relocalization map onto device. Only one relocalization map can be imported at a time;
+     * any previously existing map will be overwritten.
+     * The imported map exists simultaneously with the map created during the most recent tracking session after start(),
+     * and they are merged after the imported map is relocalized.
+     * This operation must be done before start().
+     * \param[in] lmap_buf map data as a binary blob
+     * \return true if success
+     */
+    //bool import_localization_map(const std::vector<uint8_t>& lmap_buf) const
+    
+    /**
+     * Get relocalization map that is currently on device, created and updated during most recent tracking session.
+     * Can be called before or after stop().
+     * \return map data as a binary blob
+     */
+    //std::vector<uint8_t> export_localization_map() const
+    
+    
+    /**
+     * Creates a named virtual landmark in the current map, known as static node.
+     * The static node's pose is provided relative to the origin of current coordinate system of device poses.
+     * This function fails if the current tracker confidence is below 3 (high confidence).
+     * \param[in] guid unique name of the static node (limited to 127 chars).
+     * If a static node with the same name already exists in the current map or the imported map, the static node is overwritten.
+     * \param[in] pos position of the static node in the 3D space.
+     * \param[in] orient_quat orientation of the static node in the 3D space, represented by a unit quaternion.
+     * \return true if success.
+     */
+    //set_static_node(const std::string& guid, const rs2_vector& pos, const rs2_quaternion& orient) const
+    
+    /**
+     * Gets the current pose of a static node that was created in the current map or in an imported map.
+     * Static nodes of imported maps are available after relocalizing the imported map.
+     * The static node's pose is returned relative to the current origin of coordinates of device poses.
+     * Thus, poses of static nodes of an imported map are consistent with current device poses after relocalization.
+     * This function fails if the current tracker confidence is below 3 (high confidence).
+     * \param[in] guid unique name of the static node (limited to 127 chars).
+     * \param[out] pos position of the static node in the 3D space.
+     * \param[out] orient_quat orientation of the static node in the 3D space, represented by a unit quaternion.
+     * \return true if success.
+     */
+    //bool get_static_node(const std::string& guid, rs2_vector& pos, rs2_quaternion& orient) const
+    //bool remove_static_node(const std::string& guid) const
+    
+}
+                                     
 void T265RealsenseNode::initializeOdometryInput()
 {
     std::string calib_odom_file;

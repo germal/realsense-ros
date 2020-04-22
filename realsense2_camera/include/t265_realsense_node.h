@@ -18,9 +18,12 @@ namespace realsense2_camera
 
         private:
             void initializeOdometryInput();
+            void importLocalization();
+            void importLocalization(const std::string& localization_file);
             void setupSubscribers();
             void odom_in_callback(const nav_msgs::Odometry::ConstPtr& msg);
 
+            rs2::pose_sensor _pose_snr;
             ros::Subscriber _odom_subscriber;
             rs2::wheel_odometer _wo_snr;
             bool _use_odom_in;
