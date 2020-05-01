@@ -13,50 +13,84 @@ T265RealsenseNode::T265RealsenseNode(ros::NodeHandle& nodeHandle,
                                      {
                                          _monitor_options = {RS2_OPTION_ASIC_TEMPERATURE, RS2_OPTION_MOTION_MODULE_TEMPERATURE};
                                          initializeOdometryInput();
+                                         importLocalization();
                                      }
+
+T265RealsenseNode::~T265RealsenseNode()
+{
+    exportLocalization();
+}
 
 void T265RealsenseNode::importLocalization()
 {
     std::string localization_file;
-    _pnh.param("localization_file", localization_file, std::string(""));
+    _pnh.param("map_in", localization_file, std::string(""));
     if (localization_file.empty())
     {
-        ROS_INFO("No localization_file. No localization data loaded.");
+        ROS_INFO("No [map_in] specified. No localization data loaded.");
+        
+        initMapFrame(false);
+        return;
+    }
+    importLocalization(localization_file);
+    
+    initMapFrame(true);
+
+}
+
+void T265RealsenseNode::exportLocalization()
+{
+    std::string localization_file;
+    _pnh.param("map_out", localization_file, std::string(""));
+    if (localization_file.empty())
+    {
+        ROS_INFO("No [map_out]. No localization data loaded.");
         return;
     }
     
-    importLocalization(localization_file);
+    exportLocalization(localization_file);
+}
+
+void rsPoseToMsg(const rs2_pose& pose, geometry_msgs::Pose& pose_msg)
+{
+    pose_msg.position.x = -pose.translation.z;
+    pose_msg.position.y = -pose.translation.x;
+    pose_msg.position.z = pose.translation.y;
+    pose_msg.orientation.x = -pose.rotation.z;
+    pose_msg.orientation.y = -pose.rotation.x;
+    pose_msg.orientation.z = pose.rotation.y;
+    pose_msg.orientation.w = pose.rotation.w;
 }
 
 // Copied from https://github.com/IntelRealSense/librealsense/blob/master/examples/ar-advanced/rs-ar-advanced.cpp
 std::vector<uint8_t> bytes_from_raw_file(const std::string& filename)
 {
-  std::ifstream file(filename.c_str(), std::ios::binary);
-  if (!file.good())
-    throw std::runtime_error("Invalid binary file specified. Verify the source path and location permissions");
-  
-  // Determine the file length
-  file.seekg(0, std::ios_base::end);
-  std::size_t size = file.tellg();
-  if (!size)
-    throw std::runtime_error("Invalid binary file -zero-size");
-  file.seekg(0, std::ios_base::beg);
-  
-  // Create a vector to store the data
-  std::vector<uint8_t> v(size);
-  
-  // Load the data
-  file.read((char*)&v[0], size);
-  
-  return v;
+    std::ifstream file(filename.c_str(), std::ios::binary);
+    if (!file.good())
+        throw std::runtime_error("Invalid binary file specified. Verify the source path and location permissions");
+    
+    // Determine the file length
+    file.seekg(0, std::ios_base::end);
+    std::size_t size = file.tellg();
+    if (!size)
+        throw std::runtime_error("Invalid binary file -zero-size");
+    file.seekg(0, std::ios_base::beg);
+    
+    // Create a vector to store the data
+    std::vector<uint8_t> v(size);
+    
+    // Load the data
+    file.read((char*)&v[0], size);
+    
+    return v;
 }
 
 void raw_file_from_bytes(const std::string& filename, const std::vector<uint8_t> bytes)
 {
-  std::ofstream file(filename, std::ios::binary | std::ios::trunc);
-  if (!file.good())
-    throw std::runtime_error("Invalid binary file specified. Verify the target path and location permissions");
-  file.write((char*)bytes.data(), bytes.size());
+    std::ofstream file(filename, std::ios::binary | std::ios::trunc);
+    if (!file.good())
+        throw std::runtime_error("Invalid binary file specified. Verify the target path and location permissions");
+    file.write((char*)bytes.data(), bytes.size());
 }
 
 void T265RealsenseNode::importLocalization(const std::string& localization_file)
@@ -67,7 +101,7 @@ void T265RealsenseNode::importLocalization(const std::string& localization_file)
     }
     catch (std::runtime_error e)
     {
-      ROS_ERROR_STREAM("Error loading map from " << localization_file << ": " << e.what());; 
+      ROS_ERROR_STREAM("Error loading map from " << localization_file << ": " << e.what());
     }
     
     /**
@@ -116,6 +150,124 @@ void T265RealsenseNode::importLocalization(const std::string& localization_file)
     //bool remove_static_node(const std::string& guid) const
     
 }
+
+void T265RealsenseNode::initMapFrame(bool relocalizing)
+{
+    relocalization_pose_initialized=false;
+    
+    std::string mapping_guid;
+    _pnh.param("mapping_guid", mapping_guid, std::string("map"));
+    if (mapping_guid.empty())
+    {
+        ROS_INFO("No [mapping_guid] specified. This should disable some functionality...");
+        return;
+    }
+
+    if (relocalizing)
+    {
+        ROS_INFO("Attempting to relocalize...");
+        std::string map_frame_id;
+        _pnh.param("map_frame_id", map_frame_id, std::string(""));
+        if (map_frame_id.empty())
+        {
+            ROS_INFO("No [map_frame_id] specified. Transform will not be published.");
+            return;
+        }
+
+        _pose_snr.set_notifications_callback([&](const rs2::notification& n) {
+            if (n.get_category() == RS2_NOTIFICATION_CATEGORY_POSE_RELOCALIZATION) {
+                ROS_INFO("Relocalization Event Detected.");
+                // Get static node if available
+                rs2_pose object_pose_in_world;
+                if (_pose_snr.get_static_node(mapping_guid, object_pose_in_world.translation, object_pose_in_world.rotation)) {
+                    std::cout << "Reference frame localized:  " << object_pose_in_world.translation << std::endl;
+                    relocalization_pose_initialized = true;
+                    
+                    /*
+                    pose_msg.pose.position.x = -pose.translation.z;
+                    pose_msg.pose.position.y = -pose.translation.x;
+                    pose_msg.pose.position.z = pose.translation.y;
+                    pose_msg.pose.orientation.x = -pose.rotation.z;
+                    pose_msg.pose.orientation.y = -pose.rotation.x;
+                    pose_msg.pose.orientation.z = pose.rotation.y;
+                    pose_msg.pose.orientation.w = pose.rotation.w;
+                    */
+                    
+                    float3 translation;
+                    translation.x = -object_pose_in_world.translation.z;
+                    translation.y = -object_pose_in_world.translation.x;
+                    translation.z = object_pose_in_world.translation.y;
+                    
+                    tf::Quaternion rotation(
+                        -object_pose_in_world.rotation.z,
+                        -object_pose_in_world.rotation.x,
+                        object_pose_in_world.rotation.y,
+                        object_pose_in_world.rotation.w);
+
+                    publish_static_tf(ros::Time(), translation, rotation, _odom_frame_id, map_frame_id);
+                }
+            }
+        });
+    }
+    else
+    {
+        ROS_INFO("Waiting for first pose to be available...");
+        boost::function<void (const ros::TimerEvent&)> callback = [this, mapping_guid] (const ros::TimerEvent& event)
+        {
+            // Set static node if possible (pose confidence must be high enough)
+            rs2_vector translation;
+            translation.x=0;
+            translation.y=0;
+            translation.z=0;
+            rs2_quaternion rotation;
+            rotation.x=0;
+            rotation.y=0;
+            rotation.z=0;
+            rotation.w=1;
+            if (_pose_snr.set_static_node(mapping_guid, translation, rotation)) {
+                ROS_INFO_STREAM("Reference frame initialized: " << translation);
+                _timer.stop();
+            }
+            else
+            {
+                ROS_WARN_STREAM("Warning, unable to set static node for guid [" << mapping_guid << "]");
+            }
+        };
+        
+        _timer = _node_handle.createTimer(ros::Duration(1), callback);
+        /*
+        _pose_snr.set_notifications_callback([&](const rs2::notification& n) {
+            if (!relocalization_pose_initialized && n.get_category() == RS2_NOTIFICATION_CATEGORY_POSE_RELOCALIZATION) {
+                ROS_INFO("Relocalization Event Detected.");
+                // Get static node if available
+                rs2_pose object_pose_in_world;
+                if (_pose_snr.set_static_node(mapping_guid, object_pose_in_world.translation, object_pose_in_world.rotation)) {
+                    std::cout << "Reference frame initialized:  " << object_pose_in_world.translation << std::endl;
+                    relocalization_pose_initialized = true;
+                }
+            }
+        });
+        */
+    
+    }
+}
+
+//void T265RealsenseNode::set
+
+void T265RealsenseNode::exportLocalization(const std::string& localization_file)
+{
+
+    try
+    {
+        raw_file_from_bytes(localization_file, _pose_snr.export_localization_map());
+        ROS_INFO_STREAM("Saved map to " << localization_file);
+    }
+    catch (std::runtime_error e)
+    {
+        ROS_ERROR_STREAM("Error loading map from " << localization_file << ": " << e.what());; 
+    }
+}
+
                                      
 void T265RealsenseNode::initializeOdometryInput()
 {

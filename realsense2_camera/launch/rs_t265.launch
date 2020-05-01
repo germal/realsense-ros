@@ -59,5 +59,10 @@ https://github.com/IntelRealSense/librealsense/blob/master/third-party/libtm/lib
 
       <arg name="publish_odom_tf"          value="$(arg publish_odom_tf)"/>
     </include>
+    
+    <param name="realsense2_camera/map_out" value="/tmp/map_data2"/>
+    <param name="realsense2_camera/map_in" value="/tmp/map_data"/>
+        <param name="realsense2_camera/map_frame_id" value="map"/>
+    
   </group>
 </launch>

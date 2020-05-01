@@ -11,6 +11,7 @@ namespace realsense2_camera
                           ros::NodeHandle& privateNodeHandle,
                           rs2::device dev,
                           const std::string& serial_no);
+            ~T265RealsenseNode();
             void publishTopics();
 
         protected:
@@ -20,6 +21,10 @@ namespace realsense2_camera
             void initializeOdometryInput();
             void importLocalization();
             void importLocalization(const std::string& localization_file);
+            void exportLocalization();
+            void exportLocalization(const std::string& export_file);
+            void initMapFrame(bool relocalizing);
+            
             void setupSubscribers();
             void odom_in_callback(const nav_msgs::Odometry::ConstPtr& msg);
 
@@ -27,5 +32,9 @@ namespace realsense2_camera
             ros::Subscriber _odom_subscriber;
             rs2::wheel_odometer _wo_snr;
             bool _use_odom_in;
+            ros::Timer _timer;
+            //std::string relocalization_node_guid;
+            bool relocalization_pose_initialized;
+            //std::string _map_frame_id;
     };
 }
