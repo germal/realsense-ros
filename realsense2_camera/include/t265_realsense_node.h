@@ -35,6 +35,7 @@ namespace realsense2_camera
             ros::Timer _timer;
             //std::string relocalization_node_guid;
             bool relocalization_pose_initialized;
+            tf2_ros::TransformBroadcaster _dynamic_tf_broadcaster;
             //std::string _map_frame_id;
     };
 }

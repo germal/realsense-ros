@@ -163,56 +163,91 @@ void T265RealsenseNode::initMapFrame(bool relocalizing)
         return;
     }
 
+    std::string map_frame_id;
+    _pnh.param("map_frame_id", map_frame_id, std::string(""));
+    if (map_frame_id.empty())
+    {
+        ROS_INFO("No [map_frame_id] specified. Transform will not be published.");
+        return;
+    }
+    
+    
+    auto send_transform = [&](const ros::Time& t,
+        const float3& trans,
+        const tf::Quaternion& q,
+        const std::string& from,
+        const std::string& to)
+    {
+        std::vector<geometry_msgs::TransformStamped> tf_msgs;
+            
+        geometry_msgs::TransformStamped msg;
+        msg.header.stamp = t;
+        msg.header.frame_id = from;
+        msg.child_frame_id = to;
+        msg.transform.translation.x = trans.x;
+        msg.transform.translation.y = trans.y;
+        msg.transform.translation.z = trans.z;
+        msg.transform.rotation.x = q.getX();
+        msg.transform.rotation.y = q.getY();
+        msg.transform.rotation.z = q.getZ();
+        msg.transform.rotation.w = q.getW();
+        tf_msgs.push_back(msg);
+        
+        _dynamic_tf_broadcaster.sendTransform(tf_msgs);
+    };
+    
+    auto attempt_localization = [this, mapping_guid, map_frame_id, send_transform]()
+    {
+        // Get static node if available
+        rs2_pose object_pose_in_world;
+        if (_pose_snr.get_static_node(mapping_guid, object_pose_in_world.translation, object_pose_in_world.rotation)) {
+            std::cout << "Reference frame localized:  " << object_pose_in_world.translation << std::endl;
+            relocalization_pose_initialized = true;
+            
+            float3 translation;
+            translation.x = -object_pose_in_world.translation.z;
+            translation.y = -object_pose_in_world.translation.x;
+            translation.z = object_pose_in_world.translation.y;
+            
+            tf::Quaternion rotation(
+                -object_pose_in_world.rotation.z,
+                -object_pose_in_world.rotation.x,
+                object_pose_in_world.rotation.y,
+                object_pose_in_world.rotation.w);
+
+            send_transform(ros::Time::now(), translation, rotation, _odom_frame_id, map_frame_id);
+        }
+        else
+        {
+            ROS_WARN_STREAM("Warning, unable to find static node for guid [" << mapping_guid << "]");
+        }
+        
+    };
+    
+    boost::function<void (const ros::TimerEvent&)> getter_callback = [this, attempt_localization, mapping_guid, map_frame_id] (const ros::TimerEvent& event)
+    {
+        attempt_localization();
+    };
+    
+    _pose_snr.set_notifications_callback([&](const rs2::notification& n) {
+        if (n.get_category() == RS2_NOTIFICATION_CATEGORY_POSE_RELOCALIZATION) {
+            ROS_INFO("Relocalization Event Detected.");
+            attempt_localization();
+        }
+    });
+        
+    
     if (relocalizing)
     {
         ROS_INFO("Attempting to relocalize...");
-        std::string map_frame_id;
-        _pnh.param("map_frame_id", map_frame_id, std::string(""));
-        if (map_frame_id.empty())
-        {
-            ROS_INFO("No [map_frame_id] specified. Transform will not be published.");
-            return;
-        }
-
-        _pose_snr.set_notifications_callback([&](const rs2::notification& n) {
-            if (n.get_category() == RS2_NOTIFICATION_CATEGORY_POSE_RELOCALIZATION) {
-                ROS_INFO("Relocalization Event Detected.");
-                // Get static node if available
-                rs2_pose object_pose_in_world;
-                if (_pose_snr.get_static_node(mapping_guid, object_pose_in_world.translation, object_pose_in_world.rotation)) {
-                    std::cout << "Reference frame localized:  " << object_pose_in_world.translation << std::endl;
-                    relocalization_pose_initialized = true;
-                    
-                    /*
-                    pose_msg.pose.position.x = -pose.translation.z;
-                    pose_msg.pose.position.y = -pose.translation.x;
-                    pose_msg.pose.position.z = pose.translation.y;
-                    pose_msg.pose.orientation.x = -pose.rotation.z;
-                    pose_msg.pose.orientation.y = -pose.rotation.x;
-                    pose_msg.pose.orientation.z = pose.rotation.y;
-                    pose_msg.pose.orientation.w = pose.rotation.w;
-                    */
-                    
-                    float3 translation;
-                    translation.x = -object_pose_in_world.translation.z;
-                    translation.y = -object_pose_in_world.translation.x;
-                    translation.z = object_pose_in_world.translation.y;
-                    
-                    tf::Quaternion rotation(
-                        -object_pose_in_world.rotation.z,
-                        -object_pose_in_world.rotation.x,
-                        object_pose_in_world.rotation.y,
-                        object_pose_in_world.rotation.w);
-
-                    publish_static_tf(ros::Time(), translation, rotation, _odom_frame_id, map_frame_id);
-                }
-            }
-        });
+        
+        _timer = _node_handle.createTimer(ros::Duration(1), getter_callback);
     }
     else
     {
         ROS_INFO("Waiting for first pose to be available...");
-        boost::function<void (const ros::TimerEvent&)> callback = [this, mapping_guid] (const ros::TimerEvent& event)
+        
+        boost::function<void (const ros::TimerEvent&)> setter_callback = [this, getter_callback, mapping_guid] (const ros::TimerEvent& event)
         {
             // Set static node if possible (pose confidence must be high enough)
             rs2_vector translation;
@@ -226,7 +261,8 @@ void T265RealsenseNode::initMapFrame(bool relocalizing)
             rotation.w=1;
             if (_pose_snr.set_static_node(mapping_guid, translation, rotation)) {
                 ROS_INFO_STREAM("Reference frame initialized: " << translation);
-                _timer.stop();
+                //_timer.stop();
+                _timer = _node_handle.createTimer(ros::Duration(1), getter_callback);
             }
             else
             {
@@ -234,21 +270,8 @@ void T265RealsenseNode::initMapFrame(bool relocalizing)
             }
         };
         
-        _timer = _node_handle.createTimer(ros::Duration(1), callback);
-        /*
-        _pose_snr.set_notifications_callback([&](const rs2::notification& n) {
-            if (!relocalization_pose_initialized && n.get_category() == RS2_NOTIFICATION_CATEGORY_POSE_RELOCALIZATION) {
-                ROS_INFO("Relocalization Event Detected.");
-                // Get static node if available
-                rs2_pose object_pose_in_world;
-                if (_pose_snr.set_static_node(mapping_guid, object_pose_in_world.translation, object_pose_in_world.rotation)) {
-                    std::cout << "Reference frame initialized:  " << object_pose_in_world.translation << std::endl;
-                    relocalization_pose_initialized = true;
-                }
-            }
-        });
-        */
-    
+        _timer = _node_handle.createTimer(ros::Duration(1), setter_callback);
+        
     }
 }
 
